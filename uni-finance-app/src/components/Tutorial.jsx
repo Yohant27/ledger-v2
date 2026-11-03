@@ -16,7 +16,12 @@ const SLIDES = [
   {
     title: "Not every day has to count",
     body:
-      "Weekdays count toward your target by default, weekends don't — but you can flip any individual day in the Days tab. Excluding a day never hides its spending, it just keeps that day out of your target math.",
+      "Weekdays count toward your target by default, weekends don't — and you can flip any individual day in the Days tab. A day that doesn't count earns no allowance, but anything you spend on it still comes out of your savings.",
+  },
+  {
+    title: "Pause for semester breaks",
+    body:
+      "On a break? Pause in Settings and those days stop counting entirely — no allowance, no days-left. Resume when classes start again. Spending during a pause is still recorded and still deducts from savings.",
   },
 ];
 

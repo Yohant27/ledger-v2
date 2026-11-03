@@ -63,35 +63,87 @@ function SectionLabel({ children }) {
   );
 }
 
-function Toggle({ checked, onChange }) {
+function fmtDate(dateStr) {
+  return new Date(dateStr + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function PauseSection({ pauses, today, onAddPause, onEndPause, onRemovePause }) {
+  const [start, setStart] = useState(today);
+  const [end, setEnd] = useState("");
+  const [error, setError] = useState("");
+
+  const entries = pauses.map((p, index) => ({ ...p, index })).sort((a, b) => (a.start < b.start ? 1 : -1));
+  const dateInput = {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "9px 10px",
+    fontFamily: FONT_UI,
+    fontSize: 13,
+    borderRadius: 4,
+    border: `1px solid ${COLORS.line}`,
+    background: "#FBFBF8",
+    color: COLORS.ink,
+    outline: "none",
+  };
+
+  function add() {
+    if (!start) return setError("Pick a start date");
+    if (end && end < start) return setError("End date can't be before the start date");
+    setError("");
+    onAddPause({ start, end: end || null });
+    setStart(today);
+    setEnd("");
+  }
+
   return (
-    <button
-      onClick={() => onChange(!checked)}
-      aria-pressed={checked}
-      style={{
-        width: 42,
-        height: 24,
-        borderRadius: 999,
-        border: "none",
-        padding: 3,
-        background: checked ? COLORS.ink : "rgba(var(--uf-ink-rgb),0.2)",
-        cursor: "pointer",
-        flex: "none",
-        transition: "background 200ms ease",
-      }}
-    >
-      <span
-        style={{
-          display: "block",
-          width: 18,
-          height: 18,
-          borderRadius: "50%",
-          background: "#fff",
-          transform: checked ? "translateX(18px)" : "translateX(0)",
-          transition: "transform 200ms ease",
-        }}
-      />
-    </button>
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 12, color: "rgba(var(--uf-ink-rgb),0.55)", fontFamily: FONT_UI, marginBottom: 10, lineHeight: 1.5 }}>
+        Paused days (semester breaks) don't count toward your target, so they add no allowance and aren't counted as days left. Spending on them is still recorded and still deducts from savings.
+      </div>
+
+      {entries.map((p) => {
+        const active = today >= p.start && (p.end == null || today <= p.end);
+        const upcoming = p.start > today;
+        return (
+          <div key={p.index} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 6, border: `1px solid ${COLORS.line}`, marginBottom: 8 }}>
+            <div style={{ flex: 1, fontSize: 12.5, color: COLORS.ink, fontFamily: FONT_UI, lineHeight: 1.4 }}>
+              {fmtDate(p.start)} → {p.end ? fmtDate(p.end) : "until you resume"}
+              <div style={{ fontSize: 11, color: "rgba(var(--uf-ink-rgb),0.5)" }}>{active ? "Paused now" : upcoming ? "Upcoming" : "Past"}</div>
+            </div>
+            {active && (
+              <button onClick={() => onEndPause(p.index)} style={{ border: "none", background: COLORS.ink, color: COLORS.paper, fontFamily: FONT_UI, fontSize: 12, borderRadius: 4, padding: "6px 10px", cursor: "pointer" }}>
+                Resume
+              </button>
+            )}
+            <button
+              onClick={() => { if (window.confirm("Remove this pause? Those days will count again.")) onRemovePause(p.index); }}
+              aria-label="Remove pause"
+              style={{ border: `1px solid ${COLORS.line}`, background: "transparent", color: "rgba(var(--uf-ink-rgb),0.6)", fontFamily: FONT_UI, fontSize: 12, borderRadius: 4, padding: "6px 10px", cursor: "pointer" }}
+            >
+              Remove
+            </button>
+          </div>
+        );
+      })}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11.5, color: "rgba(var(--uf-ink-rgb),0.55)", fontFamily: FONT_UI, marginBottom: 4 }}>From</div>
+          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={dateInput} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11.5, color: "rgba(var(--uf-ink-rgb),0.55)", fontFamily: FONT_UI, marginBottom: 4 }}>Until (optional)</div>
+          <input type="date" value={end} min={start} onChange={(e) => setEnd(e.target.value)} style={dateInput} />
+        </div>
+      </div>
+      {error && <div style={{ fontSize: 12, color: COLORS.brick, marginBottom: 8, fontFamily: FONT_UI }}>{error}</div>}
+      <button
+        onClick={add}
+        style={{ width: "100%", padding: "10px 0", borderRadius: 6, border: `1px solid ${COLORS.ink}`, background: "transparent", color: COLORS.ink, fontFamily: FONT_UI, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+      >
+        {end ? "Add pause" : "Pause until I resume"}
+      </button>
+    </div>
   );
 }
 
@@ -99,12 +151,14 @@ export default function Settings({
   dailyTarget,
   warningThreshold,
   onSaveTargets,
-  strictSavings,
-  onToggleStrictSavings,
+  pauses,
+  today,
+  onAddPause,
+  onEndPause,
+  onRemovePause,
   accentTheme,
   onSetAccentTheme,
-  onOpenMonth,
-  onOpenPreviousMonths,
+  onOpenTable,
   onReplayTutorial,
   onDeleteAll,
 }) {
@@ -145,18 +199,8 @@ export default function Settings({
         Save
       </button>
 
-      <SectionLabel>Saved so far</SectionLabel>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "4px 2px 4px", marginBottom: 8 }}>
-        <Toggle checked={!!strictSavings} onChange={onToggleStrictSavings} />
-        <div style={{ fontSize: 13, color: COLORS.ink, fontFamily: FONT_UI, lineHeight: 1.4 }}>
-          Weekend spending counts against savings
-        </div>
-      </div>
-      <div style={{ fontSize: 12, color: "rgba(var(--uf-ink-rgb),0.55)", fontFamily: FONT_UI, marginBottom: 20, lineHeight: 1.5 }}>
-        {strictSavings
-          ? "On — spending on excluded days (like weekends) still deducts from your saved total."
-          : "Off — spending on excluded days (like weekends) is free and doesn't touch your saved total."}
-      </div>
+      <SectionLabel>Semester break</SectionLabel>
+      <PauseSection pauses={pauses} today={today} onAddPause={onAddPause} onEndPause={onEndPause} onRemovePause={onRemovePause} />
 
       <SectionLabel>Appearance</SectionLabel>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 20 }}>
@@ -181,15 +225,14 @@ export default function Settings({
       </div>
 
       <SectionLabel>History</SectionLabel>
-      <SectionButton label="This month's full transaction list →" onClick={onOpenMonth} />
-      <SectionButton label="Previous months →" onClick={onOpenPreviousMonths} />
+      <SectionButton label="All days table (every month) →" onClick={onOpenTable} />
 
       <SectionLabel>Help</SectionLabel>
       <SectionButton label="Replay tutorial" onClick={onReplayTutorial} />
 
       <SectionLabel>Backup</SectionLabel>
       <div style={{ fontSize: 12.5, color: "rgba(var(--uf-ink-rgb),0.55)", fontFamily: FONT_UI, marginBottom: 16, lineHeight: 1.5 }}>
-        This app is local-only — your data never leaves this device. Use the Excel export above regularly (This month's full transaction list, or Previous months) as your backup.
+        This app is local-only — your data never leaves this device. Use the Excel export in the All days table regularly as your backup.
       </div>
 
       <SectionLabel>Danger zone</SectionLabel>

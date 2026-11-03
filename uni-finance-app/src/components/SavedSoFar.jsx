@@ -12,7 +12,7 @@ function Row({ label, value, color }) {
   );
 }
 
-export default function SavedSoFar({ data }) {
+export default function SavedSoFar({ data, daysRemaining }) {
   const { eligibleDays, targetAllowance, spendingOnEligibleDays, spendingOnExcludedDays, totalSpent, savedSoFar } = data;
   const positive = savedSoFar >= 0;
 
@@ -38,6 +38,10 @@ export default function SavedSoFar({ data }) {
         <Row label="Spent on eligible days" value={spendingOnEligibleDays} color={COLORS.brick} />
         <Row label="Spent on excluded days" value={spendingOnExcludedDays} color="rgba(var(--uf-ink-rgb),0.5)" />
         <Row label="Total spent this month" value={totalSpent} />
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12 }}>
+          <span style={{ color: "rgba(var(--uf-ink-rgb),0.55)", fontFamily: FONT_UI }}>Eligible days left this month</span>
+          <span style={{ fontFamily: FONT_MONO, color: COLORS.ink }}>{daysRemaining}</span>
+        </div>
       </div>
     </div>
   );

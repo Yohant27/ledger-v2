@@ -6,11 +6,7 @@
 // COLORS.gold/teal/brick are FIXED semantic colors (warning / positive-saved /
 // danger) and are never affected by the accent theme, so "saved" always reads
 // as green and "over budget" always reads as red regardless of which accent
-// the user picks. Note: COLORS.teal here is that fixed semantic color, kept
-// under its historical name — it is unrelated to the "Teal" accent preset in
-// THEME_PRESETS below (they intentionally use different hex values so a user
-// who picks the Teal accent never sees two different "teals" doing two
-// different jobs on screen).
+// the user picks.
 export const COLORS = {
   ink: "var(--uf-ink)",
   paper: "#EDEFE7",
@@ -22,20 +18,15 @@ export const COLORS = {
   lineSoft: "rgba(var(--uf-ink-rgb),0.08)",
 };
 
-// Accent theme presets. `swatch` is the true color shown in the theme
-// picker's swatch dot. `ink` is what actually gets used for text/backgrounds/
-// borders throughout the app — for the two lighter presets (Burnt Orange,
-// Mustard Yellow) `ink` is a darkened variant of the swatch color so white
-// text on it (and it as text on the paper background) stays readable; for
-// the rest, swatch and ink are the same color.
+// Accent theme presets (four only). `swatch` is the color shown in the theme
+// picker; `ink` is what's used for text/backgrounds/borders app-wide. Any
+// previously saved accent that no longer exists falls back to Navy via
+// getTheme().
 export const THEME_PRESETS = [
   { key: "navy", name: "Navy", swatch: "#16213A", ink: "#16213A" },
   { key: "maroon", name: "Maroon", swatch: "#6E1F2A", ink: "#6E1F2A" },
   { key: "plum", name: "Plum", swatch: "#5A2A5E", ink: "#5A2A5E" },
-  { key: "charcoal", name: "Charcoal Grey", swatch: "#3A3D42", ink: "#3A3D42" },
-  { key: "burntOrange", name: "Burnt Orange", swatch: "#B4531F", ink: "#8C3F17" },
-  { key: "mustard", name: "Mustard Yellow", swatch: "#C9A227", ink: "#7A5E12" },
-  { key: "teal", name: "Teal", swatch: "#1D6E6E", ink: "#1D6E6E" },
+  { key: "black", name: "Black", swatch: "#121212", ink: "#121212" },
 ];
 
 export const DEFAULT_ACCENT_KEY = "navy";

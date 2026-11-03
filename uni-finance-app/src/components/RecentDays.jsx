@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { COLORS, FONT_MONO, FONT_UI, fmt } from "../theme.js";
 import { CURRENCY } from "../config.js";
-import { recentDatesBefore, isDayIncluded, getDailyState } from "../logic.js";
+import { recentDatesBefore, isDayIncluded, isPaused, getDailyState } from "../logic.js";
 import TodayList from "./TodayList.jsx";
 
 function dayLabel(dateStr, yesterdayStr) {
@@ -17,7 +17,7 @@ const STATE_COLOR = {
   normal: COLORS.teal,
 };
 
-export default function RecentDays({ transactions, daySettingsMap, today, onDelete, dailyTarget, warningThreshold, count = 6 }) {
+export default function RecentDays({ transactions, daySettingsMap, pauses = [], today, onDelete, dailyTarget, warningThreshold, count = 6 }) {
   const [expanded, setExpanded] = useState(null);
   const dates = recentDatesBefore(today, count);
   const yesterdayStr = dates[0];
@@ -29,7 +29,8 @@ export default function RecentDays({ transactions, daySettingsMap, today, onDele
         const spent = dayTxns
           .filter((t) => t.type === "expense")
           .reduce((sum, t) => sum + t.amount, 0);
-        const included = isDayIncluded(dateStr, daySettingsMap);
+        const included = isDayIncluded(dateStr, daySettingsMap, pauses);
+        const paused = !included && isPaused(dateStr, pauses);
         const state = getDailyState(spent, dailyTarget, warningThreshold);
         const isOpen = expanded === dateStr;
 
@@ -52,7 +53,7 @@ export default function RecentDays({ transactions, daySettingsMap, today, onDele
               <span style={{ flex: 1, fontSize: 13, color: COLORS.ink, fontFamily: FONT_UI }}>
                 {dayLabel(dateStr, yesterdayStr)}
                 {!included && (
-                  <span style={{ fontSize: 10, color: "rgba(var(--uf-ink-rgb),0.4)", marginLeft: 6 }}>excluded</span>
+                  <span style={{ fontSize: 10, color: "rgba(var(--uf-ink-rgb),0.4)", marginLeft: 6 }}>{paused ? "paused" : "excluded"}</span>
                 )}
               </span>
               <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: dayTxns.length ? STATE_COLOR[state] : "rgba(var(--uf-ink-rgb),0.35)" }}>

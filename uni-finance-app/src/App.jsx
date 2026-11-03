@@ -1,20 +1,29 @@
 import { useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { Home as HomeIcon, CalendarDays, Settings as SettingsIcon, X } from "lucide-react";
+import { Home as HomeIcon, CalendarDays, Settings as SettingsIcon, X, Pause } from "lucide-react";
 import { db } from "./db.js";
-import { COLORS, FONT_VOICE, FONT_UI, themeCssVars, DEFAULT_ACCENT_KEY } from "./theme.js";
-import { getTodaySpending, getSavedSoFar, eligibleDaysRemaining, todayStr, monthKeyOf } from "./logic.js";
-import { DAILY_TARGET, WARNING_THRESHOLD, DEFAULT_STRICT_SAVINGS } from "./config.js";
+import { COLORS, FONT_VOICE, FONT_UI, themeCssVars, DEFAULT_ACCENT_KEY, fmt } from "./theme.js";
+import {
+  getTodaySpending,
+  getSavedSoFar,
+  eligibleDaysRemaining,
+  getDailyState,
+  isDayIncluded,
+  isPaused,
+  recentDatesBefore,
+  todayStr,
+  monthKeyOf,
+} from "./logic.js";
+import { DAILY_TARGET, WARNING_THRESHOLD, CURRENCY } from "./config.js";
 import DailyBar from "./components/DailyBar.jsx";
 import SavedSoFar from "./components/SavedSoFar.jsx";
-import ProgressRing from "./components/ProgressRing.jsx";
+import Toast from "./components/Toast.jsx";
 import TransactionEntry from "./components/TransactionEntry.jsx";
 import TodayList from "./components/TodayList.jsx";
 import RecentDays from "./components/RecentDays.jsx";
 import CalendarView from "./components/CalendarView.jsx";
 import Settings from "./components/Settings.jsx";
-import MonthTransactions from "./components/MonthTransactions.jsx";
-import PreviousMonths from "./components/PreviousMonths.jsx";
+import DaysTable from "./components/DaysTable.jsx";
 import Onboarding from "./components/Onboarding.jsx";
 import Tutorial from "./components/Tutorial.jsx";
 
@@ -26,8 +35,9 @@ function settingsArrayToMap(rows) {
 
 export default function App() {
   const [tab, setTab] = useState("home");
-  const [screen, setScreen] = useState("main"); // 'main' | 'month' | 'previousMonths'
+  const [screen, setScreen] = useState("main"); // 'main' | 'table'
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [toast, setToast] = useState(null);
 
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) || [];
   const daySettingsRows = useLiveQuery(() => db.daySettings.toArray(), []) || [];
@@ -43,7 +53,7 @@ export default function App() {
   const dailyTarget = settings.dailyTarget ?? DAILY_TARGET;
   const warningThreshold = settings.warningThreshold ?? WARNING_THRESHOLD;
   const onboardingComplete = !!settings.onboardingComplete;
-  const strictSavings = settings.strictSavings ?? DEFAULT_STRICT_SAVINGS;
+  const pauses = useMemo(() => settings.pauses ?? [], [settings.pauses]);
   const accentTheme = settings.accentTheme ?? DEFAULT_ACCENT_KEY;
 
   const today = todayStr();
@@ -54,14 +64,17 @@ export default function App() {
   );
 
   const daysRemainingThisMonth = useMemo(
-    () => eligibleDaysRemaining(daySettingsMap, today),
-    [daySettingsMap, today]
+    () => eligibleDaysRemaining(daySettingsMap, today, pauses),
+    [daySettingsMap, today, pauses]
   );
+
+  const pausedToday = isPaused(today, pauses) && !isDayIncluded(today, daySettingsMap, pauses);
+  const activePause = pauses.find((p) => today >= p.start && (p.end == null || today <= p.end));
 
   const savedData = useMemo(() => {
     const startDate = settings.startDate;
     const isStartingMonth = startDate && monthKeyOf(today) === monthKeyOf(startDate);
-    const opts = { strictSavings };
+    const opts = { pauses };
     if (isStartingMonth) {
       if (settings.skippedBackfill) {
         opts.startOverride = startDate;
@@ -70,10 +83,48 @@ export default function App() {
       }
     }
     return getSavedSoFar(transactions, daySettingsMap, dailyTarget, today, opts);
-  }, [transactions, daySettingsMap, dailyTarget, today, settings, strictSavings]);
+  }, [transactions, daySettingsMap, dailyTarget, today, settings, pauses]);
 
   async function addTransaction(entry) {
-    await db.transactions.add({ ...entry, createdAt: Date.now() });
+    const txId = await db.transactions.add({ ...entry, createdAt: Date.now() });
+    setToast(buildToast(entry, txId));
+  }
+
+  // Builds the in-app confirmation shown after a submit.
+  function buildToast(entry, txId) {
+    const amt = `${CURRENCY} ${fmt(entry.amount)}`;
+    const id = `${txId}-${Date.now()}`;
+    if (entry.type === "income") {
+      return { id, txId, variant: "normal", message: `Income added · +${amt}` };
+    }
+    if (entry.date !== today) {
+      const when = new Date(entry.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      return { id, txId, variant: "normal", message: `Added ${amt} to ${when}` };
+    }
+    if (!isDayIncluded(today, daySettingsMap, pauses)) {
+      return {
+        id,
+        txId,
+        variant: "warning",
+        message: `Added ${amt} · today isn't counted, so it deducts from your savings`,
+      };
+    }
+    const newTotal = todaySpent + entry.amount;
+    const state = getDailyState(newTotal, dailyTarget, warningThreshold);
+    if (state === "over") {
+      return { id, txId, variant: "over", message: `Added ${amt} · ${CURRENCY} ${fmt(newTotal - dailyTarget)} over today's target` };
+    }
+    return {
+      id,
+      txId,
+      variant: state,
+      message: `Added ${amt} · ${CURRENCY} ${fmt(dailyTarget - newTotal)} left today`,
+    };
+  }
+
+  async function undoToast() {
+    if (toast?.txId != null) await db.transactions.delete(toast.txId);
+    setToast(null);
   }
 
   async function deleteTransaction(id) {
@@ -111,8 +162,34 @@ export default function App() {
     ]);
   }
 
-  async function setStrictSavings(value) {
-    await db.settings.put({ key: "strictSavings", value });
+  async function savePauses(next) {
+    const sorted = [...next].sort((a, b) => (a.start < b.start ? -1 : 1));
+    await db.settings.put({ key: "pauses", value: sorted });
+  }
+
+  async function addPause({ start, end }) {
+    // Clear older manual per-day overrides inside the pause so the whole range
+    // is paused; days can still be force-counted afterward from the Days tab.
+    const clearTo = end && end < today ? end : today;
+    if (start <= clearTo) {
+      await db.daySettings.where("date").between(start, clearTo, true, true).delete();
+    }
+    await savePauses([...pauses, { start, end }]);
+  }
+
+  async function endPause(index) {
+    const p = pauses[index];
+    if (!p) return;
+    if (p.start >= today) {
+      await savePauses(pauses.filter((_, i) => i !== index));
+    } else {
+      const yesterday = recentDatesBefore(today, 1)[0];
+      await savePauses(pauses.map((x, i) => (i === index ? { ...x, end: yesterday } : x)));
+    }
+  }
+
+  async function removePause(index) {
+    await savePauses(pauses.filter((_, i) => i !== index));
   }
 
   async function setAccentTheme(key) {
@@ -153,12 +230,6 @@ export default function App() {
       `}</style>
 
       <div className="uf-card">
-        {onboardingComplete && !tutorialOpen && screen === "main" && (
-          <div style={{ marginBottom: 14 }}>
-            <ProgressRing savedData={savedData} daysRemaining={daysRemainingThisMonth} dailyTarget={dailyTarget} />
-          </div>
-        )}
-
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 18 }}>
           <span style={{ fontFamily: FONT_VOICE, fontSize: 15, color: COLORS.paper, letterSpacing: "0.02em" }}>
             Uni Finance
@@ -186,16 +257,36 @@ export default function App() {
               </div>
               <Tutorial finishLabel="Got it" onFinish={() => setTutorialOpen(false)} />
             </div>
-          ) : screen === "month" ? (
+          ) : screen === "table" ? (
             <div style={{ padding: "20px 22px" }}>
-              <MonthTransactions transactions={transactions} onDelete={deleteTransaction} onBack={() => setScreen("main")} />
-            </div>
-          ) : screen === "previousMonths" ? (
-            <div style={{ padding: "20px 22px" }}>
-              <PreviousMonths transactions={transactions} onDelete={deleteTransaction} onBack={() => setScreen("main")} />
+              <DaysTable
+                transactions={transactions}
+                daySettingsMap={daySettingsMap}
+                pauses={pauses}
+                dailyTarget={dailyTarget}
+                warningThreshold={warningThreshold}
+                settings={settings}
+                today={today}
+                onDelete={deleteTransaction}
+                onBack={() => setScreen("main")}
+              />
             </div>
           ) : tab === "home" ? (
             <>
+              {pausedToday && activePause && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 22px", background: "rgba(var(--uf-ink-rgb),0.08)", borderBottom: `1px solid ${COLORS.line}` }}>
+                  <Pause size={14} color={COLORS.ink} style={{ flex: "none" }} />
+                  <div style={{ flex: 1, fontSize: 12, color: COLORS.ink, fontFamily: FONT_UI, lineHeight: 1.4 }}>
+                    On break — today isn't counted toward your target.
+                  </div>
+                  <button
+                    onClick={() => endPause(pauses.indexOf(activePause))}
+                    style={{ border: "none", background: COLORS.ink, color: COLORS.paper, fontFamily: FONT_UI, fontSize: 12, borderRadius: 4, padding: "6px 10px", cursor: "pointer", flex: "none" }}
+                  >
+                    Resume
+                  </button>
+                </div>
+              )}
               <div style={{ padding: "22px 22px 18px", borderBottom: `1px solid ${COLORS.line}` }}>
                 <TransactionEntry onAdd={addTransaction} />
               </div>
@@ -205,7 +296,7 @@ export default function App() {
               </div>
 
               <div style={{ padding: "18px 22px", borderBottom: `1px solid ${COLORS.line}` }}>
-                <SavedSoFar data={savedData} />
+                <SavedSoFar data={savedData} daysRemaining={daysRemainingThisMonth} />
               </div>
 
               <div style={{ padding: "14px 22px", borderBottom: `1px solid ${COLORS.line}` }}>
@@ -222,6 +313,7 @@ export default function App() {
                 <RecentDays
                   transactions={transactions}
                   daySettingsMap={daySettingsMap}
+                  pauses={pauses}
                   today={today}
                   onDelete={deleteTransaction}
                   dailyTarget={dailyTarget}
@@ -231,7 +323,7 @@ export default function App() {
             </>
           ) : tab === "calendar" ? (
             <div style={{ padding: "20px 22px" }}>
-              <CalendarView daySettingsMap={daySettingsMap} onToggleDay={toggleDay} onSetRange={setRangeDay} />
+              <CalendarView daySettingsMap={daySettingsMap} pauses={pauses} onToggleDay={toggleDay} onSetRange={setRangeDay} />
             </div>
           ) : (
             <div style={{ padding: "20px 22px" }}>
@@ -239,18 +331,22 @@ export default function App() {
                 dailyTarget={dailyTarget}
                 warningThreshold={warningThreshold}
                 onSaveTargets={saveTargets}
-                strictSavings={strictSavings}
-                onToggleStrictSavings={setStrictSavings}
+                pauses={pauses}
+                today={today}
+                onAddPause={addPause}
+                onEndPause={endPause}
+                onRemovePause={removePause}
                 accentTheme={accentTheme}
                 onSetAccentTheme={setAccentTheme}
-                onOpenMonth={() => setScreen("month")}
-                onOpenPreviousMonths={() => setScreen("previousMonths")}
+                onOpenTable={() => setScreen("table")}
                 onReplayTutorial={() => setTutorialOpen(true)}
                 onDeleteAll={deleteAllData}
               />
             </div>
           )}
         </div>
+
+        <Toast toast={toast} onUndo={undoToast} onDismiss={() => setToast(null)} />
 
         {onboardingComplete && !tutorialOpen && screen === "main" && (
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>

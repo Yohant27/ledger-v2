@@ -30,10 +30,18 @@ export function defaultIncluded(dateStr) {
   return !isWeekend(dateStr);
 }
 
+// pauses: [{ start: 'YYYY-MM-DD', end: 'YYYY-MM-DD' | null }]  (end null = still paused)
+export function isPaused(dateStr, pauses = []) {
+  return pauses.some((p) => dateStr >= p.start && (p.end == null || dateStr <= p.end));
+}
+
 // daySettingsMap: { [dateStr]: { included: boolean, source: 'manual' } }
-export function isDayIncluded(dateStr, daySettingsMap) {
+// Precedence: a manual per-day override always wins; otherwise a paused day
+// (semester break) is excluded; otherwise weekdays are in and weekends are out.
+export function isDayIncluded(dateStr, daySettingsMap, pauses = []) {
   const override = daySettingsMap[dateStr];
   if (override) return override.included;
+  if (isPaused(dateStr, pauses)) return false;
   return defaultIncluded(dateStr);
 }
 
@@ -86,30 +94,25 @@ export function recentDatesBefore(beforeDateStr, count) {
  * eligibleDays = count of included dates from the 1st of the month (or the
  *                user's start date, if this is their first month and they
  *                skipped backfilling) through `asOfDate`, inclusive. Never
- *                counts future dates.
+ *                counts future dates. Paused days (semester breaks) are not
+ *                included unless manually overridden.
  * targetAllowance = eligibleDays * dailyTarget
  * spendingOnEligibleDays = sum of expenses on included dates in that range,
  *                          plus a one-time backfill amount if provided
- * spendingOnExcludedDays = sum of expenses on excluded dates in that range
- *                          (still counted in totalSpent, never in savedSoFar)
- * savedSoFar = targetAllowance - spendingOnEligibleDays
+ * spendingOnExcludedDays = sum of expenses on excluded or paused dates
+ * savedSoFar = targetAllowance - (spendingOnEligibleDays + spendingOnExcludedDays)
+ *
+ * Spending on excluded/paused days ALWAYS deducts from savings: a day that
+ * doesn't earn an allowance still costs money when you spend on it.
  *
  * opts.backfillAmount: a one-time lump sum representing spending before the
- *   user started using the app (only pass this for the user's starting
- *   month — the caller is responsible for zeroing it out afterward).
- * opts.startOverride: a date string ('YYYY-MM-DD') to use instead of the
- *   1st of the month as the range start (only relevant for the user's
- *   starting month, when they chose to skip backfilling).
- * opts.strictSavings: when true, savedSoFar deducts spending on EVERY day
- *   (eligible or excluded) instead of only eligible-day spending. This is
- *   the user-facing Settings toggle — default false preserves the original
- *   behavior, where excluded days (e.g. weekends someone's normally home)
- *   never touch savings. With it on, spending on an excluded day (e.g. out
- *   somewhere on a Saturday) dips into savings the same way an eligible
- *   day's spending would, rather than being "free."
+ *   user started using the app (only for the user's starting month).
+ * opts.startOverride: a date string to use instead of the 1st of the month
+ *   as the range start (only for the starting month, when backfill was skipped).
+ * opts.pauses: the list of semester-break pauses.
  */
 export function getSavedSoFar(transactions, daySettingsMap, dailyTarget, asOfDate, opts = {}) {
-  const { backfillAmount = 0, startOverride = null, strictSavings = false } = opts;
+  const { backfillAmount = 0, startOverride = null, pauses = [] } = opts;
   const monthKey = monthKeyOf(asOfDate);
   const dates = datesFromMonthStartTo(monthKey, asOfDate, startOverride);
 
@@ -126,7 +129,7 @@ export function getSavedSoFar(transactions, daySettingsMap, dailyTarget, asOfDat
   }
 
   for (const dateStr of dates) {
-    const included = isDayIncluded(dateStr, daySettingsMap);
+    const included = isDayIncluded(dateStr, daySettingsMap, pauses);
     if (included) eligibleDays += 1;
     const spentThatDay = spendingByDate[dateStr] || 0;
     if (included) spendingOnEligibleDays += spentThatDay;
@@ -137,9 +140,7 @@ export function getSavedSoFar(transactions, daySettingsMap, dailyTarget, asOfDat
 
   const targetAllowance = eligibleDays * dailyTarget;
   const totalSpent = spendingOnEligibleDays + spendingOnExcludedDays;
-  const savedSoFar = strictSavings
-    ? targetAllowance - totalSpent
-    : targetAllowance - spendingOnEligibleDays;
+  const savedSoFar = targetAllowance - totalSpent;
 
   return {
     monthKey,
@@ -149,15 +150,14 @@ export function getSavedSoFar(transactions, daySettingsMap, dailyTarget, asOfDat
     spendingOnExcludedDays,
     totalSpent,
     savedSoFar,
-    strictSavings,
   };
 }
 
 // Counts eligible (included) days strictly AFTER `asOfDate` through the end
-// of `asOfDate`'s month — i.e. "days left" for the ring's reserved segment
-// and the Settings/ring days-remaining readout. Excluded days (e.g. default
-// weekends) don't count, same as they don't count toward targetAllowance.
-export function eligibleDaysRemaining(daySettingsMap, asOfDate) {
+// of `asOfDate`'s month — the "days left" readout. Excluded days (default
+// weekends) and paused days don't count, same as they don't count toward
+// targetAllowance.
+export function eligibleDaysRemaining(daySettingsMap, asOfDate, pauses = []) {
   const monthKey = monthKeyOf(asOfDate);
   const [y, m] = monthKey.split("-").map(Number);
   const lastDay = daysInMonth(y, m - 1);
@@ -166,7 +166,7 @@ export function eligibleDaysRemaining(daySettingsMap, asOfDate) {
   let count = 0;
   for (let day = asOfDay + 1; day <= lastDay; day++) {
     const dateStr = `${monthKey}-${String(day).padStart(2, "0")}`;
-    if (isDayIncluded(dateStr, daySettingsMap)) count += 1;
+    if (isDayIncluded(dateStr, daySettingsMap, pauses)) count += 1;
   }
   return count;
 }
@@ -212,4 +212,67 @@ export function getMonthSummary(transactions, monthKey) {
 export function allMonthKeysDescending(transactions) {
   const keys = new Set(transactions.map((t) => monthKeyOf(t.date)));
   return [...keys].sort().reverse();
+}
+
+// Every month that should appear in the all-days table, most recent first:
+// the current month, the month the user started, and any month with a
+// transaction.
+export function tableMonthKeys(transactions, startDate, today) {
+  const keys = new Set([monthKeyOf(today)]);
+  if (startDate) keys.add(monthKeyOf(startDate));
+  for (const t of transactions) keys.add(monthKeyOf(t.date));
+  return [...keys].sort().reverse();
+}
+
+/**
+ * One row per day of `monthKey` (through today at most) for the all-days
+ * table. Mirrors getSavedSoFar exactly so a month's totals match the Home
+ * screen's "saved so far":
+ *   saved (per day) = included ? target - spent : -spent
+ *   totals.saved    = eligibleDays * target - spent - backfill
+ *
+ * opts.startOverride / opts.backfillAmount apply only to the user's starting
+ * month, same as getSavedSoFar.
+ */
+export function getMonthDayRows(transactions, daySettingsMap, pauses, dailyTarget, monthKey, today, opts = {}) {
+  const { startOverride = null, backfillAmount = 0 } = opts;
+  const [y, m] = monthKey.split("-").map(Number);
+  const lastOfMonth = toDateStr(new Date(y, m, 0));
+  const end = lastOfMonth < today ? lastOfMonth : today;
+
+  const empty = { rows: [], totals: { eligibleDays: 0, spent: 0, target: 0, backfill: 0, saved: 0 } };
+  if (end < `${monthKey}-01`) return empty;
+
+  const spentByDate = {};
+  const countByDate = {};
+  for (const t of transactions) {
+    if (monthKeyOf(t.date) !== monthKey) continue;
+    countByDate[t.date] = (countByDate[t.date] || 0) + 1;
+    if (t.type === "expense") spentByDate[t.date] = (spentByDate[t.date] || 0) + t.amount;
+  }
+
+  let eligibleDays = 0;
+  let spent = 0;
+  const rows = datesFromMonthStartTo(monthKey, end, startOverride).map((date) => {
+    const included = isDayIncluded(date, daySettingsMap, pauses);
+    const paused = !included && isPaused(date, pauses);
+    const daySpent = spentByDate[date] || 0;
+    if (included) eligibleDays += 1;
+    spent += daySpent;
+    return {
+      date,
+      included,
+      status: included ? "included" : paused ? "paused" : "excluded",
+      spent: daySpent,
+      count: countByDate[date] || 0,
+      target: included ? dailyTarget : 0,
+      saved: (included ? dailyTarget : 0) - daySpent,
+    };
+  });
+
+  const target = eligibleDays * dailyTarget;
+  return {
+    rows,
+    totals: { eligibleDays, spent, target, backfill: backfillAmount, saved: target - spent - backfillAmount },
+  };
 }
